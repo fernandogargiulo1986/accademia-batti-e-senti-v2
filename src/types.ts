@@ -5,12 +5,15 @@ export type { Ruolo };
 export interface Profile {
   id: string;
   nome: string;
-  email: string;
   ruolo: Ruolo;
   aula_default_id: string | null;
 }
 
+// Restituito solo dalla RPC get_all_user_profiles (admin), che unisce
+// profiles con l'email da auth.users. La tabella profiles non ha una
+// colonna email: per l'utente corrente si usa auth user.email.
 export interface AdminProfile extends Profile {
+  email: string;
   aula_default_nome: string | null;
 }
 

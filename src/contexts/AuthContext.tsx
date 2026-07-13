@@ -16,7 +16,7 @@ const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 async function loadProfile(userId: string): Promise<{ profile: Profile | null; error: string | null }> {
   const { data, error } = await supabase
     .from('profiles')
-    .select('id, nome, email, ruolo, aula_default_id')
+    .select('id, nome, ruolo, aula_default_id')
     .eq('id', userId)
     .single();
   if (error) {

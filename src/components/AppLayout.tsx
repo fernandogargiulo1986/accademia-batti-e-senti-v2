@@ -8,7 +8,7 @@ interface NavItem {
 }
 
 export function AppLayout() {
-  const { profile, signOut } = useAuth();
+  const { user, profile, signOut } = useAuth();
   const isAdmin = profile?.ruolo === 'admin';
 
   const navItems: NavItem[] = [
@@ -32,7 +32,7 @@ export function AppLayout() {
           <h1 className="text-lg sm:text-xl font-bold text-indigo-600">Registro Appuntamenti</h1>
           <div className="flex items-center space-x-2 sm:space-x-4">
             <span className="text-xs sm:text-sm text-gray-600 truncate max-w-[100px] sm:max-w-xs">
-              {profile?.email}
+              {user?.email}
             </span>
             <button
               onClick={() => signOut()}
