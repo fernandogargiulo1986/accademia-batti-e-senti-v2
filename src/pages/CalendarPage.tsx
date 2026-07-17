@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect, useCallback } from 'react';
+import { useMemo, useRef, useState, useEffect, useCallback } from 'react';
 import FullCalendar from '@fullcalendar/react';
 import dayGridPlugin from '@fullcalendar/daygrid';
 import timeGridPlugin from '@fullcalendar/timegrid';
@@ -28,6 +28,7 @@ export function CalendarPage() {
   const { profile } = useAuth();
   const isEditable = profile?.ruolo === 'admin' || profile?.ruolo === 'teacher';
   const isMobile = useIsMobile();
+  const calendarRef = useRef<FullCalendar>(null);
 
   const [range, setRange] = useState<DateRange | null>(null);
   const [teacherFilterId, setTeacherFilterId] = useState('all');
@@ -70,6 +71,28 @@ export function CalendarPage() {
 
     return [...apptEvents, ...occupiedEvents];
   }, [appointments, occupiedSlots, profile]);
+
+  // Evita che la vista si apra sempre dalle 08:00: scorre fino a un'ora prima
+  // del primo evento del periodo visibile, cosi le lezioni pomeridiane/serali
+  // sono visibili senza dover scorrere manualmente.
+  const scrollTime = useMemo(() => {
+    const startTimes = events
+      .map((e) => e.start)
+      .filter((s): s is string => typeof s === 'string')
+      .map((s) => new Date(s));
+    if (startTimes.length === 0) return '08:00:00';
+
+    const earliest = new Date(Math.min(...startTimes.map((d) => d.getTime())));
+    const paddedHour = Math.max(8, earliest.getHours() - 1);
+    return `${String(paddedHour).padStart(2, '0')}:00:00`;
+  }, [events]);
+
+  // scrollTime viene applicato da FullCalendar solo al montaggio/cambio vista;
+  // se gli eventi arrivano dopo (fetch asincrono su una vista gia' montata),
+  // forziamo lo scroll manualmente.
+  useEffect(() => {
+    calendarRef.current?.getApi().scrollToTime(scrollTime);
+  }, [scrollTime]);
 
   function handleEventClick(arg: EventClickArg) {
     if (arg.event.extendedProps.isOccupied) return;
@@ -120,6 +143,7 @@ export function CalendarPage() {
 
       <div className="flex-grow min-h-0">
         <FullCalendar
+          ref={calendarRef}
           key={isMobile ? 'mobile' : 'desktop'}
           plugins={[dayGridPlugin, timeGridPlugin, listPlugin, interactionPlugin]}
           initialView={isMobile ? 'timeGridDay' : 'timeGridWeek'}
@@ -131,6 +155,7 @@ export function CalendarPage() {
           locale={itLocale}
           slotMinTime="08:00:00"
           slotMaxTime="21:00:00"
+          scrollTime={scrollTime}
           allDaySlot={false}
           height="100%"
           editable={isEditable}
