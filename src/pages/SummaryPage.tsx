@@ -2,23 +2,30 @@ import { useState } from 'react';
 import * as XLSX from 'xlsx';
 import { supabase } from '../lib/supabase';
 
-interface SummaryRow {
+interface AggregatedRow {
   key: string;
-  studentNome: string;
-  teacherNome: string;
+  primaryLabel: string;
+  secondaryLabel?: string;
   counts: Record<string, number>;
 }
 
 interface SummaryResult {
   months: string[];
-  rows: SummaryRow[];
+  studentRows: AggregatedRow[];
+  teacherRows: AggregatedRow[];
   from: string;
   to: string;
 }
 
+type Mode = 'student' | 'teacher';
+
 function monthLabel(key: string): string {
   const [year, month] = key.split('-');
   return new Date(Number(year), Number(month) - 1).toLocaleString('it-IT', { month: 'long', year: 'numeric' });
+}
+
+function rowTotal(row: AggregatedRow): number {
+  return Object.values(row.counts).reduce((a, b) => a + b, 0);
 }
 
 export function SummaryPage() {
@@ -27,6 +34,7 @@ export function SummaryPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [result, setResult] = useState<SummaryResult | null>(null);
+  const [mode, setMode] = useState<Mode>('student');
 
   async function generate() {
     setError('');
@@ -43,7 +51,11 @@ export function SummaryPage() {
 
     setLoading(true);
 
-    const [{ data: appointments, error: apptError }, { data: allStudents, error: studentsError }] = await Promise.all([
+    const [
+      { data: appointments, error: apptError },
+      { data: allStudents, error: studentsError },
+      { data: allTeachers, error: teachersError },
+    ] = await Promise.all([
       supabase
         .from('appuntamenti')
         .select('data_inizio, studente_id(id, nome), insegnante_id(id, nome)')
@@ -51,12 +63,14 @@ export function SummaryPage() {
         .lte('data_inizio', `${to}T23:59:59`)
         .order('data_inizio', { ascending: true }),
       supabase.from('profiles').select('id, nome').eq('ruolo', 'student').order('nome'),
+      supabase.from('profiles').select('id, nome').eq('ruolo', 'teacher').order('nome'),
     ]);
 
     setLoading(false);
 
     if (apptError) { setError('Errore: ' + apptError.message); return; }
     if (studentsError) { setError('Errore: ' + studentsError.message); return; }
+    if (teachersError) { setError('Errore: ' + teachersError.message); return; }
 
     const months: string[] = [];
     const cursor = new Date(`${from}T00:00:00`);
@@ -68,66 +82,97 @@ export function SummaryPage() {
       cursor.setMonth(cursor.getMonth() + 1);
     }
 
-    // Raggruppa per coppia studente+insegnante: se uno studente ha avuto
-    // lezioni con piu insegnanti nel periodo, compare una riga per ciascuno.
     type AptRow = {
       data_inizio: string;
       studente_id: { id: string; nome: string } | null;
       insegnante_id: { id: string; nome: string } | null;
     };
+    const rows = (appointments as unknown as AptRow[] | null) ?? [];
 
-    const rowMap = new Map<string, SummaryRow>();
+    // Vista per studente: raggruppa per coppia studente+insegnante, cosi uno
+    // studente con lezioni presso piu insegnanti compare su piu righe.
+    const studentRowMap = new Map<string, AggregatedRow>();
     const studentsWithLessons = new Set<string>();
 
-    (appointments as unknown as AptRow[] | null)?.forEach((apt) => {
+    rows.forEach((apt) => {
       const student = apt.studente_id;
       if (!student) return;
       studentsWithLessons.add(student.id);
 
       const teacher = apt.insegnante_id;
       const key = `${student.id}|${teacher?.id ?? 'none'}`;
-      if (!rowMap.has(key)) {
-        rowMap.set(key, { key, studentNome: student.nome, teacherNome: teacher?.nome ?? 'N/D', counts: {} });
+      if (!studentRowMap.has(key)) {
+        studentRowMap.set(key, { key, primaryLabel: student.nome, secondaryLabel: teacher?.nome ?? 'N/D', counts: {} });
       }
       const monthKey = apt.data_inizio.slice(0, 7);
-      const row = rowMap.get(key)!;
+      const row = studentRowMap.get(key)!;
       row.counts[monthKey] = (row.counts[monthKey] ?? 0) + 1;
     });
 
-    // Include anche gli studenti senza alcuna lezione nel periodo.
     allStudents?.forEach((s) => {
       if (!studentsWithLessons.has(s.id)) {
-        rowMap.set(`${s.id}|none`, { key: `${s.id}|none`, studentNome: s.nome, teacherNome: 'N/D', counts: {} });
+        studentRowMap.set(`${s.id}|none`, { key: `${s.id}|none`, primaryLabel: s.nome, secondaryLabel: 'N/D', counts: {} });
       }
     });
 
-    const rows = [...rowMap.values()].sort((a, b) =>
-      a.studentNome.localeCompare(b.studentNome) || a.teacherNome.localeCompare(b.teacherNome)
+    const studentRows = [...studentRowMap.values()].sort((a, b) =>
+      a.primaryLabel.localeCompare(b.primaryLabel) || (a.secondaryLabel ?? '').localeCompare(b.secondaryLabel ?? '')
     );
-    setResult({ months, rows, from, to });
+
+    // Vista per insegnante: totale lezioni per mese, sommando tutti gli studenti.
+    const teacherRowMap = new Map<string, AggregatedRow>();
+    const teachersWithLessons = new Set<string>();
+
+    rows.forEach((apt) => {
+      const teacher = apt.insegnante_id;
+      if (!teacher) return;
+      teachersWithLessons.add(teacher.id);
+
+      if (!teacherRowMap.has(teacher.id)) {
+        teacherRowMap.set(teacher.id, { key: teacher.id, primaryLabel: teacher.nome, counts: {} });
+      }
+      const monthKey = apt.data_inizio.slice(0, 7);
+      const row = teacherRowMap.get(teacher.id)!;
+      row.counts[monthKey] = (row.counts[monthKey] ?? 0) + 1;
+    });
+
+    allTeachers?.forEach((t) => {
+      if (!teachersWithLessons.has(t.id)) {
+        teacherRowMap.set(t.id, { key: t.id, primaryLabel: t.nome, counts: {} });
+      }
+    });
+
+    const teacherRows = [...teacherRowMap.values()].sort((a, b) => a.primaryLabel.localeCompare(b.primaryLabel));
+
+    setResult({ months, studentRows, teacherRows, from, to });
   }
 
   function downloadExcel() {
     if (!result) return;
-    const { months, rows, from, to } = result;
+    const { months, studentRows, teacherRows, from, to } = result;
 
-    const header = ['Studente', 'Insegnante', ...months.map(monthLabel), 'Totale'];
-    const dataRows = rows.map((r) => {
-      const total = Object.values(r.counts).reduce((a, b) => a + b, 0);
-      return [r.studentNome, r.teacherNome, ...months.map((m) => r.counts[m] ?? 0), total];
-    });
-
-    const ws = XLSX.utils.aoa_to_sheet([header, ...dataRows]);
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Riepilogo Lezioni');
+
+    const studentHeader = ['Studente', 'Insegnante', ...months.map(monthLabel), 'Totale'];
+    const studentData = studentRows.map((r) => [r.primaryLabel, r.secondaryLabel ?? '', ...months.map((m) => r.counts[m] ?? 0), rowTotal(r)]);
+    const wsStudents = XLSX.utils.aoa_to_sheet([studentHeader, ...studentData]);
+    XLSX.utils.book_append_sheet(wb, wsStudents, 'Per Studente');
+
+    const teacherHeader = ['Insegnante', ...months.map(monthLabel), 'Totale'];
+    const teacherData = teacherRows.map((r) => [r.primaryLabel, ...months.map((m) => r.counts[m] ?? 0), rowTotal(r)]);
+    const wsTeachers = XLSX.utils.aoa_to_sheet([teacherHeader, ...teacherData]);
+    XLSX.utils.book_append_sheet(wb, wsTeachers, 'Per Insegnante');
+
     XLSX.writeFile(wb, `riepilogo_lezioni_${from}_${to}.xlsx`);
   }
 
+  const activeRows = result ? (mode === 'student' ? result.studentRows : result.teacherRows) : [];
+
   return (
     <div className="bg-white p-4 sm:p-6 rounded-lg shadow-md flex-grow overflow-auto">
-      <h2 className="text-2xl font-bold mb-4">Riepilogo Lezioni per Studente</h2>
+      <h2 className="text-2xl font-bold mb-4">Riepilogo Lezioni</h2>
 
-      <div className="flex flex-wrap gap-4 items-end mb-6">
+      <div className="flex flex-wrap gap-4 items-end mb-4">
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Dal</label>
           <input
@@ -166,35 +211,53 @@ export function SummaryPage() {
       {error && <p className="text-sm text-red-500">{error}</p>}
 
       {result && (
-        <div className="overflow-x-auto">
-          <table className="min-w-full divide-y divide-gray-200 text-sm">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-4 py-3 text-left font-medium text-gray-500 uppercase tracking-wider">Studente</th>
-                <th className="px-4 py-3 text-left font-medium text-gray-500 uppercase tracking-wider">Insegnante</th>
-                {result.months.map((m) => (
-                  <th key={m} className="px-4 py-3 text-center font-medium text-gray-500 uppercase tracking-wider">{monthLabel(m)}</th>
-                ))}
-                <th className="px-4 py-3 text-center font-medium text-gray-500 uppercase tracking-wider">Totale</th>
-              </tr>
-            </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
-              {result.rows.map((r) => {
-                const total = Object.values(r.counts).reduce((a, b) => a + b, 0);
-                return (
+        <>
+          <div className="flex gap-2 mb-4">
+            <button
+              onClick={() => setMode('student')}
+              className={`px-3 py-1.5 text-sm font-medium rounded-md ${mode === 'student' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+            >
+              Per Studente
+            </button>
+            <button
+              onClick={() => setMode('teacher')}
+              className={`px-3 py-1.5 text-sm font-medium rounded-md ${mode === 'teacher' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+            >
+              Per Insegnante
+            </button>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200 text-sm">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500 uppercase tracking-wider">
+                    {mode === 'student' ? 'Studente' : 'Insegnante'}
+                  </th>
+                  {mode === 'student' && (
+                    <th className="px-4 py-3 text-left font-medium text-gray-500 uppercase tracking-wider">Insegnante</th>
+                  )}
+                  {result.months.map((m) => (
+                    <th key={m} className="px-4 py-3 text-center font-medium text-gray-500 uppercase tracking-wider">{monthLabel(m)}</th>
+                  ))}
+                  <th className="px-4 py-3 text-center font-medium text-gray-500 uppercase tracking-wider">Totale</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {activeRows.map((r) => (
                   <tr key={r.key}>
-                    <td className="px-4 py-3 font-medium text-gray-900">{r.studentNome}</td>
-                    <td className="px-4 py-3 text-gray-700">{r.teacherNome}</td>
+                    <td className="px-4 py-3 font-medium text-gray-900">{r.primaryLabel}</td>
+                    {mode === 'student' && <td className="px-4 py-3 text-gray-700">{r.secondaryLabel}</td>}
                     {result.months.map((m) => (
                       <td key={m} className="px-4 py-3 text-center text-gray-700">{r.counts[m] ?? 0}</td>
                     ))}
-                    <td className="px-4 py-3 text-center font-bold text-indigo-700">{total}</td>
+                    <td className="px-4 py-3 text-center font-bold text-indigo-700">{rowTotal(r)}</td>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
     </div>
   );
