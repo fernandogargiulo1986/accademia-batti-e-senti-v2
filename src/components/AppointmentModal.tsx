@@ -14,13 +14,16 @@ interface AppointmentModalProps {
   onClose: () => void;
   /** null = creazione nuovo appuntamento; altrimenti appuntamento esistente */
   appointment: AppuntamentoRelations | null;
-  /** Data di default precompilata quando si crea un nuovo appuntamento */
+  /** Data/orari di default precompilati quando si crea un nuovo appuntamento
+   * (es. selezionando uno slot dal calendario invece di usare il bottone +) */
   defaultDate?: string;
+  defaultStartTime?: string;
+  defaultEndTime?: string;
 }
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
-export function AppointmentModal({ isOpen, onClose, appointment, defaultDate }: AppointmentModalProps) {
+export function AppointmentModal({ isOpen, onClose, appointment, defaultDate, defaultStartTime, defaultEndTime }: AppointmentModalProps) {
   const { profile, user } = useAuth();
   const { data: teachers } = useTeachers();
   const { data: students } = useStudents();
@@ -57,8 +60,8 @@ export function AppointmentModal({ isOpen, onClose, appointment, defaultDate }: 
       setStudentId('');
       setNotes('');
       setDate(defaultDate ?? new Date().toISOString().slice(0, 10));
-      setStartTime('');
-      setEndTime('');
+      setStartTime(defaultStartTime ?? '');
+      setEndTime(defaultEndTime ?? '');
       if (profile?.ruolo === 'teacher') {
         setTeacherId(user!.id);
         setClassroomId(profile.aula_default_id ?? '');
@@ -76,7 +79,7 @@ export function AppointmentModal({ isOpen, onClose, appointment, defaultDate }: 
       setStartTime(start.toTimeString().slice(0, 5));
       setEndTime(new Date(appointment.data_fine).toTimeString().slice(0, 5));
     }
-  }, [isOpen, isCreate, appointment, defaultDate, profile, user]);
+  }, [isOpen, isCreate, appointment, defaultDate, defaultStartTime, defaultEndTime, profile, user]);
 
   if (!isOpen) return null;
 

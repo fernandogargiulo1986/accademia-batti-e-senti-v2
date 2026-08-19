@@ -2,14 +2,16 @@ import { useState } from 'react';
 import * as XLSX from 'xlsx';
 import { supabase } from '../lib/supabase';
 
-interface StudentSummary {
-  nome: string;
+interface SummaryRow {
+  key: string;
+  studentNome: string;
+  teacherNome: string;
   counts: Record<string, number>;
 }
 
 interface SummaryResult {
   months: string[];
-  students: StudentSummary[];
+  rows: SummaryRow[];
   from: string;
   to: string;
 }
@@ -44,7 +46,7 @@ export function SummaryPage() {
     const [{ data: appointments, error: apptError }, { data: allStudents, error: studentsError }] = await Promise.all([
       supabase
         .from('appuntamenti')
-        .select('data_inizio, studente_id(id, nome)')
+        .select('data_inizio, studente_id(id, nome), insegnante_id(id, nome)')
         .gte('data_inizio', `${from}T00:00:00`)
         .lte('data_inizio', `${to}T23:59:59`)
         .order('data_inizio', { ascending: true }),
@@ -66,33 +68,56 @@ export function SummaryPage() {
       cursor.setMonth(cursor.getMonth() + 1);
     }
 
-    const studentMap = new Map<string, StudentSummary>();
-    allStudents?.forEach((s) => studentMap.set(s.id, { nome: s.nome, counts: {} }));
+    // Raggruppa per coppia studente+insegnante: se uno studente ha avuto
+    // lezioni con piu insegnanti nel periodo, compare una riga per ciascuno.
+    type AptRow = {
+      data_inizio: string;
+      studente_id: { id: string; nome: string } | null;
+      insegnante_id: { id: string; nome: string } | null;
+    };
 
-    type AptRow = { data_inizio: string; studente_id: { id: string; nome: string } | null };
+    const rowMap = new Map<string, SummaryRow>();
+    const studentsWithLessons = new Set<string>();
+
     (appointments as unknown as AptRow[] | null)?.forEach((apt) => {
       const student = apt.studente_id;
-      if (!student || !studentMap.has(student.id)) return;
+      if (!student) return;
+      studentsWithLessons.add(student.id);
+
+      const teacher = apt.insegnante_id;
+      const key = `${student.id}|${teacher?.id ?? 'none'}`;
+      if (!rowMap.has(key)) {
+        rowMap.set(key, { key, studentNome: student.nome, teacherNome: teacher?.nome ?? 'N/D', counts: {} });
+      }
       const monthKey = apt.data_inizio.slice(0, 7);
-      const s = studentMap.get(student.id)!;
-      s.counts[monthKey] = (s.counts[monthKey] ?? 0) + 1;
+      const row = rowMap.get(key)!;
+      row.counts[monthKey] = (row.counts[monthKey] ?? 0) + 1;
     });
 
-    const students = [...studentMap.values()].sort((a, b) => a.nome.localeCompare(b.nome));
-    setResult({ months, students, from, to });
+    // Include anche gli studenti senza alcuna lezione nel periodo.
+    allStudents?.forEach((s) => {
+      if (!studentsWithLessons.has(s.id)) {
+        rowMap.set(`${s.id}|none`, { key: `${s.id}|none`, studentNome: s.nome, teacherNome: 'N/D', counts: {} });
+      }
+    });
+
+    const rows = [...rowMap.values()].sort((a, b) =>
+      a.studentNome.localeCompare(b.studentNome) || a.teacherNome.localeCompare(b.teacherNome)
+    );
+    setResult({ months, rows, from, to });
   }
 
   function downloadExcel() {
     if (!result) return;
-    const { months, students, from, to } = result;
+    const { months, rows, from, to } = result;
 
-    const header = ['Studente', ...months.map(monthLabel), 'Totale'];
-    const rows = students.map((s) => {
-      const total = Object.values(s.counts).reduce((a, b) => a + b, 0);
-      return [s.nome, ...months.map((m) => s.counts[m] ?? 0), total];
+    const header = ['Studente', 'Insegnante', ...months.map(monthLabel), 'Totale'];
+    const dataRows = rows.map((r) => {
+      const total = Object.values(r.counts).reduce((a, b) => a + b, 0);
+      return [r.studentNome, r.teacherNome, ...months.map((m) => r.counts[m] ?? 0), total];
     });
 
-    const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
+    const ws = XLSX.utils.aoa_to_sheet([header, ...dataRows]);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Riepilogo Lezioni');
     XLSX.writeFile(wb, `riepilogo_lezioni_${from}_${to}.xlsx`);
@@ -146,6 +171,7 @@ export function SummaryPage() {
             <thead className="bg-gray-50">
               <tr>
                 <th className="px-4 py-3 text-left font-medium text-gray-500 uppercase tracking-wider">Studente</th>
+                <th className="px-4 py-3 text-left font-medium text-gray-500 uppercase tracking-wider">Insegnante</th>
                 {result.months.map((m) => (
                   <th key={m} className="px-4 py-3 text-center font-medium text-gray-500 uppercase tracking-wider">{monthLabel(m)}</th>
                 ))}
@@ -153,13 +179,14 @@ export function SummaryPage() {
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
-              {result.students.map((s) => {
-                const total = Object.values(s.counts).reduce((a, b) => a + b, 0);
+              {result.rows.map((r) => {
+                const total = Object.values(r.counts).reduce((a, b) => a + b, 0);
                 return (
-                  <tr key={s.nome}>
-                    <td className="px-4 py-3 font-medium text-gray-900">{s.nome}</td>
+                  <tr key={r.key}>
+                    <td className="px-4 py-3 font-medium text-gray-900">{r.studentNome}</td>
+                    <td className="px-4 py-3 text-gray-700">{r.teacherNome}</td>
                     {result.months.map((m) => (
-                      <td key={m} className="px-4 py-3 text-center text-gray-700">{s.counts[m] ?? 0}</td>
+                      <td key={m} className="px-4 py-3 text-center text-gray-700">{r.counts[m] ?? 0}</td>
                     ))}
                     <td className="px-4 py-3 text-center font-bold text-indigo-700">{total}</td>
                   </tr>

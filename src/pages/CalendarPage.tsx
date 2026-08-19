@@ -4,7 +4,7 @@ import dayGridPlugin from '@fullcalendar/daygrid';
 import timeGridPlugin from '@fullcalendar/timegrid';
 import listPlugin from '@fullcalendar/list';
 import interactionPlugin from '@fullcalendar/interaction';
-import type { EventClickArg, EventInput, DatesSetArg } from '@fullcalendar/core';
+import type { EventClickArg, EventInput, DatesSetArg, DateSelectArg } from '@fullcalendar/core';
 import itLocale from '@fullcalendar/core/locales/it';
 import { useAuth } from '../contexts/AuthContext';
 import { useTeachers } from '../hooks/useProfiles';
@@ -34,6 +34,7 @@ export function CalendarPage() {
   const [teacherFilterId, setTeacherFilterId] = useState('all');
   const [modalOpen, setModalOpen] = useState(false);
   const [editingAppointment, setEditingAppointment] = useState<AppuntamentoRelations | null>(null);
+  const [slotPrefill, setSlotPrefill] = useState<{ date: string; startTime: string; endTime: string } | null>(null);
 
   const { data: teachers } = useTeachers();
   const { data: appointments } = useCalendarAppointments(range, teacherFilterId);
@@ -104,7 +105,20 @@ export function CalendarPage() {
 
   function openNewAppointment() {
     setEditingAppointment(null);
+    setSlotPrefill(null);
     setModalOpen(true);
+  }
+
+  function handleSelect(info: DateSelectArg) {
+    if (!isEditable) return;
+    setEditingAppointment(null);
+    setSlotPrefill({
+      date: info.startStr.slice(0, 10),
+      startTime: info.start.toTimeString().slice(0, 5),
+      endTime: info.end.toTimeString().slice(0, 5),
+    });
+    setModalOpen(true);
+    info.view.calendar.unselect();
   }
 
   return (
@@ -159,6 +173,8 @@ export function CalendarPage() {
           allDaySlot={false}
           height="100%"
           editable={isEditable}
+          selectable={isEditable}
+          select={handleSelect}
           events={events}
           datesSet={handleDatesSet}
           eventClick={handleEventClick}
@@ -169,6 +185,9 @@ export function CalendarPage() {
         isOpen={modalOpen}
         onClose={() => setModalOpen(false)}
         appointment={editingAppointment}
+        defaultDate={slotPrefill?.date}
+        defaultStartTime={slotPrefill?.startTime}
+        defaultEndTime={slotPrefill?.endTime}
       />
     </div>
   );
